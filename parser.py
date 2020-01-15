@@ -23,6 +23,8 @@ class IOLFileParser:
         "Inversion Argentina Dolares": "USD",
     }
 
+    MONEDAS = ["ARS", "USD"]
+
     BONOS = ["AY24","AC17","AF20","A2M2","TC20","PARA","DICA","TJ20","AO20","PARY","PR15","AY24D","TO21","AA37","TC21","AL36","AM20","AA25","DICY","PR13","A2E2","PBA25","TO23","BDC28","DICP","DICAD","A2E7","PBY22","AO20D","AC17D","DIA0","AF20D","AA21D","AE48D","DICYD","AA22","TVPP","AA37D","PARYD","PAY0","PARP","YPCUO","CO26","TVPA","PUM21","BDC20","AA25D","A2E8","BPLD","PMJ21","A2E2D","A2E7D","DIP0","CO26D","PARAD","TVPY","TC23","DIA0D","PAA0","TO26","BPLDD","CUAP","PAA0D","TVPE","A2E3","A2E3D","A2E8D","A2J9","A2J9D","AA21","AA26","AA26D","AA46","AA46D","AE48","AMX9","BBN19","BD2C9","BDC19","BDC22","BP21","BP28","BPLE","BPMD","BPMDD","BPME","CEDI","CH24D","CHSG1","CHSG2","CSFQO","DICE","DIY0","DIY0D","FORM3","IRC1O","NO20","NRH2","ONCTG_6","PAP0","PAY0D","PBD19","PBF23","PBJ21","PBJ27","PBM24","PF23D","PMY24","PUL26","PUO19","RHC20","RPC4O","SA24D","SARH","SUC1P","TC25P","TFU27","TN20","TVPYD","TVY0","VSC1O","VSC2O"]
     ACCIONES = ["AGRO","ALUA","APBR","AUSO","BBAR","BHIP","BMA","BOLT","BPAT","BRIO","BYMA","CADO","CAPU","CAPX","CARC","CECO2","CELU","CEPU","CGPA2","COLO","COME","CRES","CTIO","CVH","DGCU2","DYCA","EDN","ESME","FERR","FIPL","GAMI","GARO","GBAN","GCLA","GGAL","GRIM","HARG","HAVA","INAG","INDU","INTR","INVJ","IRCP","IRSA","LEDE","LOMA","LONG","MERA","METR","MIRG","MOLA","MOLI","MORI","OEST","PAMP","PATA","PATY","PGR","POLL","RICH","RIGO","ROSE","SAMI","SEMI","SUPV","TECO2","TGLT","TGNO4","TGSU2","TRAN","TXAR","VALO","YPFD"]
     LETRAS = ["LTDL9-3L8", "UL9D"]
@@ -79,11 +81,15 @@ class IOLFileParser:
 
     def __init__(self, filename):
         self.xls = pd.read_html(filename, decimal=",", thousands='.', parse_dates=True)[0]
-        self.movimientos_por_accion = {}
-        self.movimientos_por_bono = {}
-        self.movimientos_letras = []
-        self.movimientos_fondos = []
-        self.movimientos_compra_venta_divisas = []
+        self.movimientos = {
+            "ACCIONES":     [],
+            "BONOS":        [],
+            "FCI":          [],
+            "LETRAS":       [],
+            "DIVISAS":      [],
+            "MOV_FONDOS":   [],
+        }
+
 
     def parse_file(self):
         for idx in reversed(range(0, len(self.xls))):
@@ -108,15 +114,32 @@ class IOLFileParser:
                     print(f"{tipo_movimiento} {activo}")
 
                     self.parse_row(self.xls.iloc[idx], tipo_movimiento, activo)
+        self.normalizar_montos()
+        self.normalizar_activos()
 
-    def get_parsed_data(self):
-        return {
-            "movimientos_por_accion": self.movimientos_por_accion,
-            "movimientos_por_bono": self.movimientos_por_bono,
-            "movimientos_letras": self.movimientos_letras,
-            "movimientos_fondos": self.movimientos_fondos,
-            "movimientos_compra_venta_divisas": self.movimientos_compra_venta_divisas,
-        }
+    def normalizar_montos(self):
+        for tipo in self.movimientos:
+            for i, movimiento in enumerate(self.movimientos[tipo]):
+                
+                if "monto" and "moneda" in movimiento:
+                    for moneda in self.MONEDAS:
+                        self.movimientos[tipo][i][f"monto ({moneda})"] = 0
+                    self.movimientos[tipo][i][f"monto ({movimiento['moneda']})"] = movimiento["monto"]
+                    del self.movimientos[tipo][i]["monto"]
+                    #del self.movimientos[tipo][i]["moneda"]
+
+    def normalizar_activos(self):
+        """Renombra los activos por las equivalencias"""
+        for tipo in self.movimientos:
+            for i, movimiento in enumerate(self.movimientos[tipo]):
+                if "activo" in movimiento:
+                    if movimiento["activo"][-1:] == "D" and movimiento["activo"][:-1] in self.BONOS:
+                        self.movimientos[tipo][i]["activo"] = activo[:-1]
+                    if movimiento["activo"] == "LTDL9-3L8":
+                        self.movimientos[tipo][i]["activo"] = "UL9D"
+
+    def get_movimientos(self):
+        return self.movimientos
 
     def get_moneda(self, row):
         return self.MONEDA[row[self.TIPO_CUENTA]]
@@ -129,83 +152,96 @@ class IOLFileParser:
         elif activo in self.LETRAS:
             self.parse_letra(row, tipo_movimiento, activo)
         elif activo in self.FONDOS:
-            self.parse_fondo(row, tipo_movimiento, activo)
+            self.parse_fci(row, tipo_movimiento, activo)
         elif tipo_movimiento in ["DEPOSITO_FONDOS", "EXTRACCION_FONDOS"]:
             self.parse_movimiento_fondos(row, tipo_movimiento)
         elif tipo_movimiento in ["COMPRA_DOLAR", "VENTA_DOLAR"]:
             self.parse_compra_venta_divisa(row, tipo_movimiento)
 
     def parse_bono(self, row, tipo_movimiento, activo):
-        if activo not in self.movimientos_por_bono:
-            self.movimientos_por_bono[activo] = []
-                
-        if row[self.CANTIDAD_TITULOS] == 0:
-            self.movimientos_por_bono[activo].append(
+        if row[self.CANTIDAD_TITULOS] == 0: # Pago rentas/amortizacion
+            self.movimientos["BONOS"].append(
                 {
+                    "activo": activo,
                     "accion": tipo_movimiento,
                     "monto":  float(row[self.MONTO]),
                     "fecha": row[self.FECHA_LIQUIDACION],
                     "cantidad": row[self.CANTIDAD_TITULOS],
-                    "moneda": self.get_moneda(row)
+                    "moneda": self.get_moneda(row),
+                    "precio": row[self.PRECIO],
                 }
             )
         
         else:
             if self.get_moneda(row) == "USD":
-                self.movimientos_por_bono[activo].append(
+                self.movimientos["BONOS"].append(
                     {
+                        "activo": activo,
                         "accion": f"{tipo_movimiento}_COMISION",
                         "monto": float(row[self.MONTO]),
                         "fecha": row[self.FECHA_LIQUIDACION],
-                        "cantidad": row[self.CANTIDAD_TITULOS],
+                        "cantidad": 0,
                         "moneda": "ARS",
+                        "precio": row[self.PRECIO],
                     }
                 )
 
-            self.movimientos_por_bono[activo].append(
+            self.movimientos["BONOS"].append(
                 {
+                    "activo": activo,
                     "accion": tipo_movimiento,
                     "monto": row[self.CANTIDAD_TITULOS] * float(row[self.PRECIO])/100 * (-1 if "COMPRA" in tipo_movimiento else 1),
                     "fecha": row[self.FECHA_LIQUIDACION],
-                    "cantidad": row[self.CANTIDAD_TITULOS],
-                    "moneda": self.get_moneda(row)
+                    "cantidad": row[self.CANTIDAD_TITULOS] * (1 if "COMPRA" in tipo_movimiento else -1),
+                    "moneda": self.get_moneda(row),
+                    "precio": row[self.PRECIO],
                 }
             )
                 
 
     def parse_accion(self, row, tipo_movimiento, activo):
-        if activo not in self.movimientos_por_accion:
-            self.movimientos_por_accion[activo] = []
                 
-        self.movimientos_por_accion[activo].append(
+        self.movimientos["ACCIONES"].append(
             {
+                "activo": activo,
                 "accion": tipo_movimiento,
                 "monto": float(row[self.MONTO]),
                 "fecha": row[self.FECHA_LIQUIDACION],
-                "cantidad": row[self.CANTIDAD_TITULOS],
+                "cantidad": row[self.CANTIDAD_TITULOS] * (1 if "COMPRA" in tipo_movimiento else -1),
                 "moneda": self.get_moneda(row),
+                "precio": row[self.PRECIO],
             }
             
         )
 
     def parse_letra(self, row, tipo_movimiento, activo):
-        self.movimientos_letras.append(
+        self.movimientos["LETRAS"].append(
             {
+                "activo": activo,
                 "accion": tipo_movimiento,
                 "moneda": self.get_moneda(row),
                 "monto": row[self.MONTO],
                 "fecha": row[self.FECHA_LIQUIDACION],
                 "numero_movimiento": row[self.NUM_MOVIMIENTO],
                 "precio": row[self.PRECIO],
-                "activo": activo,
             }
         )
 
-    def parse_fondo(self, row, tipo_movimiento, activo):
-        pass
+    def parse_fci(self, row, tipo_movimiento, activo):
+        self.movimientos["FCI"].append(
+            {
+                "activo": activo,
+                "accion": tipo_movimiento,
+                "moneda": self.get_moneda(row),
+                "monto": abs(row[self.MONTO])*-1 if tipo_movimiento == "SUSCRIPCION_FCI" else abs(row[self.MONTO]),
+                "fecha": row[self.FECHA_LIQUIDACION],
+                "numero_movimiento": row[self.NUM_MOVIMIENTO],
+                "precio": row[self.PRECIO],
+            }
+        )
 
     def parse_compra_venta_divisa(self, row, tipo_movimiento):
-        self.movimientos_compra_venta_divisas.append(
+        self.movimientos["DIVISAS"].append(
             {
                 "accion": tipo_movimiento,
                 "moneda": self.get_moneda(row),
@@ -217,7 +253,7 @@ class IOLFileParser:
         )
 
     def parse_movimiento_fondos(self, row, tipo_movimiento):
-        self.movimientos_fondos.append(
+        self.movimientos["MOV_FONDOS"].append(
             {
                 "accion": tipo_movimiento,
                 "moneda": self.get_moneda(row),
